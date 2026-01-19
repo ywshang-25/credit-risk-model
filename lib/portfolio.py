@@ -1,8 +1,11 @@
 """Portfolio and obligor data structures for credit risk modeling."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union, TYPE_CHECKING
 import numpy as np
+
+if TYPE_CHECKING:
+    from .lgd_distribution import LGDDistribution
 
 
 @dataclass
@@ -12,12 +15,13 @@ class Obligor:
     Attributes:
         name: Unique identifier for the obligor
         pd: Probability of default (annualized)
-        lgd: Loss given default (recovery = 1 - lgd)
+        lgd: Mean loss given default (used if lgd_distribution is None)
         ead: Exposure at default
         factor_loadings: Dict mapping factor names to loadings (betas)
         sector: Industry sector classification
         country: Geographic region/country
         rating: Credit rating (e.g., 'AAA', 'BB', 'CCC')
+        lgd_distribution: Optional stochastic LGD distribution (Beta or Empirical)
     """
     name: str
     pd: float
@@ -27,6 +31,7 @@ class Obligor:
     sector: Optional[str] = None
     country: Optional[str] = None
     rating: Optional[str] = None
+    lgd_distribution: Optional["LGDDistribution"] = None
 
     def __post_init__(self):
         if not 0 <= self.pd <= 1:
@@ -43,9 +48,36 @@ class Obligor:
             )
 
     @property
+    def has_stochastic_lgd(self) -> bool:
+        """Check if this obligor uses stochastic LGD."""
+        return self.lgd_distribution is not None
+
+    def get_lgd_mean(self) -> float:
+        """Get the mean LGD value."""
+        if self.lgd_distribution is not None:
+            return self.lgd_distribution.mean()
+        return self.lgd
+
+    def sample_lgd(self, n_samples: int, systematic_factor: Optional[np.ndarray] = None,
+                   random_state: Optional[int] = None) -> np.ndarray:
+        """Sample LGD values for simulation.
+
+        Args:
+            n_samples: Number of samples to draw
+            systematic_factor: Optional systematic factor for correlation
+            random_state: Random seed
+
+        Returns:
+            Array of LGD values
+        """
+        if self.lgd_distribution is not None:
+            return self.lgd_distribution.sample(n_samples, systematic_factor, random_state)
+        return np.full(n_samples, self.lgd)
+
+    @property
     def expected_loss(self) -> float:
         """Calculate expected loss for this obligor."""
-        return self.pd * self.lgd * self.ead
+        return self.pd * self.get_lgd_mean() * self.ead
 
     @property
     def idiosyncratic_weight(self) -> float:
@@ -155,7 +187,8 @@ class Portfolio:
                 factor_loadings=obligor.factor_loadings.copy(),
                 sector=obligor.sector,
                 country=obligor.country,
-                rating=obligor.rating
+                rating=obligor.rating,
+                lgd_distribution=obligor.lgd_distribution
             )
             new_portfolio.add_obligor(new_obligor)
         return new_portfolio

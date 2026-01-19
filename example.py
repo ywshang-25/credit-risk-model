@@ -7,6 +7,7 @@ This script demonstrates:
 3. Running Monte Carlo simulation
 4. Calculating Incremental Risk Contributions (IRC)
 5. Risk decomposition by sector, country, and rating
+6. Stochastic LGD using Beta and Empirical distributions
 """
 
 import numpy as np
@@ -22,7 +23,10 @@ from credit_risk import (
     MonteCarloEngine,
     RiskCalculator,
     create_irc_report,
-    create_decomposition_report
+    create_decomposition_report,
+    BetaLGD,
+    EmpiricalLGD,
+    create_lgd_distribution
 )
 
 
@@ -220,6 +224,114 @@ def main():
         print("   [PASS] Higher PD obligors have higher average IRC")
     else:
         print("   [NOTE] IRC depends on multiple factors including EAD and correlations")
+
+    print("\n" + "=" * 70)
+    print("STOCHASTIC LGD DEMONSTRATION")
+    print("=" * 70)
+
+    print("\n10. Creating portfolio with stochastic LGD...")
+
+    # Create sample historical LGD data for empirical distribution
+    np.random.seed(123)
+    historical_lgd_data = np.clip(np.random.beta(2, 3, size=100) * 0.8 + 0.1, 0.1, 0.9)
+
+    # Create a portfolio with mixed LGD types
+    stochastic_portfolio = Portfolio(name="Stochastic LGD Portfolio")
+
+    # Obligor with Beta-distributed LGD
+    stochastic_portfolio.add_obligor(Obligor(
+        name="Bank_Beta_LGD",
+        pd=0.02,
+        lgd=0.45,  # Mean LGD (used for expected_loss calculation)
+        ead=15_000_000,
+        factor_loadings={"global": 0.35, "financials": 0.40, "us": 0.15},
+        sector="financials",
+        country="us",
+        rating="A",
+        lgd_distribution=BetaLGD(
+            mean=0.45,
+            std=0.15,
+            factor_sensitivity=0.3  # LGD increases when economy is stressed
+        )
+    ))
+
+    # Obligor with Empirical LGD from historical data
+    stochastic_portfolio.add_obligor(Obligor(
+        name="Energy_Empirical_LGD",
+        pd=0.03,
+        lgd=float(np.mean(historical_lgd_data)),
+        ead=20_000_000,
+        factor_loadings={"global": 0.30, "energy": 0.45, "us": 0.15},
+        sector="energy",
+        country="us",
+        rating="BB",
+        lgd_distribution=EmpiricalLGD(
+            historical_lgd=historical_lgd_data,
+            factor_sensitivity=0.2
+        )
+    ))
+
+    # Obligor with constant LGD (traditional approach)
+    stochastic_portfolio.add_obligor(Obligor(
+        name="Tech_Constant_LGD",
+        pd=0.015,
+        lgd=0.40,
+        ead=10_000_000,
+        factor_loadings={"global": 0.25, "technology": 0.45, "us": 0.20},
+        sector="technology",
+        country="us",
+        rating="A"
+        # No lgd_distribution -> uses constant lgd
+    ))
+
+    print(f"   Portfolio: {stochastic_portfolio.name}")
+    print(f"   Number of obligors: {len(stochastic_portfolio)}")
+    for obligor in stochastic_portfolio.obligors:
+        lgd_type = type(obligor.lgd_distribution).__name__ if obligor.lgd_distribution else "Constant"
+        print(f"   - {obligor.name}: LGD type = {lgd_type}, mean = {obligor.get_lgd_mean():.2%}")
+
+    print("\n11. Comparing constant vs stochastic LGD simulation...")
+
+    # Run simulation with stochastic LGD
+    engine_stochastic = MonteCarloEngine(model, random_state=42)
+    result_stochastic = engine_stochastic.simulate(stochastic_portfolio, num_scenarios=50000)
+
+    print(f"\n   Stochastic LGD Results:")
+    print(f"   Expected Loss: ${result_stochastic.expected_loss:,.0f}")
+    print(f"   Loss Std Dev: ${result_stochastic.loss_std:,.0f}")
+    print(f"   VaR (99%): ${result_stochastic.get_var(0.99):,.0f}")
+    print(f"   Expected Shortfall (99%): ${result_stochastic.get_expected_shortfall(0.99):,.0f}")
+
+    # Create equivalent portfolio with constant LGD for comparison
+    constant_portfolio = Portfolio(name="Constant LGD Portfolio")
+    for obligor in stochastic_portfolio.obligors:
+        constant_portfolio.add_obligor(Obligor(
+            name=obligor.name,
+            pd=obligor.pd,
+            lgd=obligor.get_lgd_mean(),  # Use mean as constant
+            ead=obligor.ead,
+            factor_loadings=obligor.factor_loadings.copy(),
+            sector=obligor.sector,
+            country=obligor.country,
+            rating=obligor.rating
+            # No lgd_distribution
+        ))
+
+    engine_constant = MonteCarloEngine(model, random_state=42)
+    result_constant = engine_constant.simulate(constant_portfolio, num_scenarios=50000)
+
+    print(f"\n   Constant LGD Results (same mean LGD):")
+    print(f"   Expected Loss: ${result_constant.expected_loss:,.0f}")
+    print(f"   Loss Std Dev: ${result_constant.loss_std:,.0f}")
+    print(f"   VaR (99%): ${result_constant.get_var(0.99):,.0f}")
+    print(f"   Expected Shortfall (99%): ${result_constant.get_expected_shortfall(0.99):,.0f}")
+
+    print(f"\n   Impact of Stochastic LGD:")
+    var_diff = result_stochastic.get_var(0.99) - result_constant.get_var(0.99)
+    es_diff = result_stochastic.get_expected_shortfall(0.99) - result_constant.get_expected_shortfall(0.99)
+    print(f"   VaR increase: ${var_diff:,.0f} ({var_diff/result_constant.get_var(0.99)*100:.1f}%)")
+    print(f"   ES increase: ${es_diff:,.0f} ({es_diff/result_constant.get_expected_shortfall(0.99)*100:.1f}%)")
+    print("   [Note: Stochastic LGD typically increases tail risk due to LGD-PD correlation]")
 
     print("\n" + "=" * 70)
     print("SIMULATION COMPLETE")

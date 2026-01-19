@@ -1,41 +1,30 @@
-"""Multi-factor credit risk model for incremental default loss calculation.
+"""Core library modules for credit risk modeling.
 
-This package provides tools for credit portfolio risk analysis using a
-multi-factor Gaussian copula model.
-
-Main components (in lib/):
+This subpackage contains the core implementation:
 - portfolio: Obligor and Portfolio data structures
-- model: Multi-factor model with factor correlations
+- model: Multi-factor Gaussian copula model
 - simulation: Monte Carlo simulation engine
-- risk_metrics: Incremental Risk Contribution (IRC) calculations
-- lgd_distribution: Stochastic LGD models (Beta, Empirical CDF)
+- risk_metrics: IRC and risk calculations
+- lgd_distribution: Stochastic LGD models
 """
 
-from .lib import (
-    # Portfolio
-    Obligor,
-    Portfolio,
-    # Model
-    MultiFactorModel,
-    # Simulation
-    MonteCarloEngine,
-    ParallelMonteCarloEngine,
-    SimulationResult,
-    # Risk metrics
+from .portfolio import Obligor, Portfolio
+from .model import MultiFactorModel
+from .simulation import MonteCarloEngine, ParallelMonteCarloEngine, SimulationResult
+from .risk_metrics import (
     RiskCalculator,
     IncrementalRiskResult,
     RiskDecomposition,
     create_irc_report,
-    create_decomposition_report,
-    # LGD distributions
+    create_decomposition_report
+)
+from .lgd_distribution import (
     LGDDistribution,
     ConstantLGD,
     BetaLGD,
     EmpiricalLGD,
-    create_lgd_distribution,
+    create_lgd_distribution
 )
-
-__version__ = "1.1.0"
 
 __all__ = [
     # Portfolio

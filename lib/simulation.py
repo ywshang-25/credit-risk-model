@@ -168,10 +168,14 @@ class MonteCarloEngine:
 
         default_indicators = asset_returns < default_thresholds
 
-        lgd_array = np.array([o.lgd for o in obligors])
+        # Sample LGD for each obligor (stochastic or constant)
+        seed3 = self._rng.integers(0, 2**31)
+        lgd_matrix = self._sample_lgd_matrix(
+            obligors, num_scenarios, factor_scenarios, seed3
+        )
         ead_array = np.array([o.ead for o in obligors])
 
-        obligor_losses = default_indicators * lgd_array * ead_array
+        obligor_losses = default_indicators * lgd_matrix * ead_array
 
         scenario_losses = np.sum(obligor_losses, axis=1)
 
@@ -223,10 +227,14 @@ class MonteCarloEngine:
 
         default_indicators = asset_returns < default_thresholds
 
-        lgd_array = np.array([o.lgd for o in obligors])
+        # Sample LGD for each obligor (stochastic or constant)
+        seed3 = random_state if random_state else self._rng.integers(0, 2**31)
+        lgd_matrix = self._sample_lgd_matrix(
+            obligors, num_scenarios, factor_scenarios, seed3 + 1
+        )
         ead_array = np.array([o.ead for o in obligors])
 
-        obligor_losses = default_indicators * lgd_array * ead_array
+        obligor_losses = default_indicators * lgd_matrix * ead_array
         scenario_losses = np.sum(obligor_losses, axis=1)
 
         return SimulationResult(
@@ -237,6 +245,44 @@ class MonteCarloEngine:
             num_scenarios=num_scenarios,
             num_defaults_per_scenario=np.sum(default_indicators, axis=1)
         )
+
+    def _sample_lgd_matrix(self, obligors: List, num_scenarios: int,
+                           factor_scenarios: np.ndarray,
+                           random_state: int) -> np.ndarray:
+        """Sample LGD values for all obligors across all scenarios.
+
+        Args:
+            obligors: List of Obligor objects
+            num_scenarios: Number of scenarios
+            factor_scenarios: Factor values for systematic correlation
+            random_state: Random seed
+
+        Returns:
+            LGD matrix of shape (num_scenarios, num_obligors)
+        """
+        num_obligors = len(obligors)
+        lgd_matrix = np.zeros((num_scenarios, num_obligors))
+
+        # Use global factor (first factor) as systematic factor for LGD correlation
+        # This captures the empirical observation that LGD increases in downturns
+        systematic_factor = factor_scenarios[:, 0] if factor_scenarios.shape[1] > 0 else None
+
+        rng = np.random.default_rng(random_state)
+
+        for i, obligor in enumerate(obligors):
+            if obligor.has_stochastic_lgd:
+                # Sample from the obligor's LGD distribution
+                obligor_seed = rng.integers(0, 2**31)
+                lgd_matrix[:, i] = obligor.sample_lgd(
+                    num_scenarios,
+                    systematic_factor=systematic_factor,
+                    random_state=obligor_seed
+                )
+            else:
+                # Use constant LGD
+                lgd_matrix[:, i] = obligor.lgd
+
+        return lgd_matrix
 
 
 def _simulate_chunk(args: Tuple) -> SimulationResult:
