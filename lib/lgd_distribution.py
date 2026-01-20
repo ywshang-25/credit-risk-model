@@ -16,6 +16,9 @@ from scipy.interpolate import interp1d
 class LGDDistribution(ABC):
     """Abstract base class for LGD distributions."""
 
+    # Distribution type identifier for vectorized sampling
+    distribution_type: str = "base"
+
     @abstractmethod
     def sample(self, n_samples: int, systematic_factor: Optional[np.ndarray] = None,
                random_state: Optional[int] = None) -> np.ndarray:
@@ -42,12 +45,19 @@ class LGDDistribution(ABC):
         """Return the standard deviation of LGD."""
         pass
 
+    @abstractmethod
+    def get_params(self) -> dict:
+        """Return parameters needed for vectorized sampling."""
+        pass
+
 
 class ConstantLGD(LGDDistribution):
     """Constant (deterministic) LGD - no randomness.
 
     Use this for backward compatibility or when LGD uncertainty is not modeled.
     """
+
+    distribution_type = "constant"
 
     def __init__(self, value: float):
         """Initialize constant LGD.
@@ -70,6 +80,10 @@ class ConstantLGD(LGDDistribution):
     def std(self) -> float:
         return 0.0
 
+    def get_params(self) -> dict:
+        """Return parameters for vectorized sampling."""
+        return {"value": self._value}
+
     def __repr__(self) -> str:
         return f"ConstantLGD(value={self._value:.4f})"
 
@@ -86,6 +100,8 @@ class BetaLGD(LGDDistribution):
         If factor_sensitivity > 0:
             LGD_adjusted = LGD_base + factor_sensitivity * systematic_factor * std(LGD)
     """
+
+    distribution_type = "beta"
 
     def __init__(self, mean: float, std: float,
                  factor_sensitivity: float = 0.0,
@@ -169,6 +185,42 @@ class BetaLGD(LGDDistribution):
     def std(self) -> float:
         return self._std
 
+    def get_params(self) -> dict:
+        """Return parameters for vectorized sampling."""
+        return {
+            "alpha": self._alpha,
+            "beta": self._beta,
+            "floor": self._floor,
+            "cap": self._cap,
+            "factor_sensitivity": self._factor_sensitivity,
+            "std": self._std,
+        }
+
+    @property
+    def alpha(self) -> Optional[float]:
+        """Beta distribution alpha parameter."""
+        return self._alpha
+
+    @property
+    def beta(self) -> Optional[float]:
+        """Beta distribution beta parameter."""
+        return self._beta
+
+    @property
+    def floor(self) -> float:
+        """Minimum LGD value."""
+        return self._floor
+
+    @property
+    def cap(self) -> float:
+        """Maximum LGD value."""
+        return self._cap
+
+    @property
+    def factor_sensitivity(self) -> float:
+        """Sensitivity to systematic factors."""
+        return self._factor_sensitivity
+
     def __repr__(self) -> str:
         return (f"BetaLGD(mean={self._mean:.4f}, std={self._std:.4f}, "
                 f"factor_sensitivity={self._factor_sensitivity:.2f})")
@@ -186,6 +238,8 @@ class EmpiricalLGD(LGDDistribution):
         3. Apply inverse CDF to get LGD samples
         4. Optionally adjust based on systematic factor
     """
+
+    distribution_type = "empirical"
 
     def __init__(self, historical_lgd: Union[List[float], np.ndarray],
                  factor_sensitivity: float = 0.0,
@@ -258,6 +312,17 @@ class EmpiricalLGD(LGDDistribution):
 
     def std(self) -> float:
         return self._std_val
+
+    def get_params(self) -> dict:
+        """Return parameters for vectorized sampling."""
+        return {
+            "historical_lgd": self._historical_lgd,
+            "inverse_cdf": self._inverse_cdf,
+            "floor": self._floor,
+            "cap": self._cap,
+            "factor_sensitivity": self._factor_sensitivity,
+            "std": self._std_val,
+        }
 
     @property
     def n_observations(self) -> int:

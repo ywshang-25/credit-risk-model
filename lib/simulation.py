@@ -251,6 +251,8 @@ class MonteCarloEngine:
                            random_state: int) -> np.ndarray:
         """Sample LGD values for all obligors across all scenarios.
 
+        Uses vectorized numpy operations for efficiency with large portfolios.
+
         Args:
             obligors: List of Obligor objects
             num_scenarios: Number of scenarios
@@ -264,23 +266,148 @@ class MonteCarloEngine:
         lgd_matrix = np.zeros((num_scenarios, num_obligors))
 
         # Use global factor (first factor) as systematic factor for LGD correlation
-        # This captures the empirical observation that LGD increases in downturns
         systematic_factor = factor_scenarios[:, 0] if factor_scenarios.shape[1] > 0 else None
 
         rng = np.random.default_rng(random_state)
 
+        # Classify obligors by distribution type for vectorized processing
+        constant_indices = []
+        constant_values = []
+        beta_indices = []
+        beta_params = []  # (alpha, beta, floor, cap, factor_sensitivity, std)
+        empirical_obligors = []  # (index, obligor) - need individual processing
+
         for i, obligor in enumerate(obligors):
-            if obligor.has_stochastic_lgd:
-                # Sample from the obligor's LGD distribution
-                obligor_seed = rng.integers(0, 2**31)
-                lgd_matrix[:, i] = obligor.sample_lgd(
-                    num_scenarios,
-                    systematic_factor=systematic_factor,
-                    random_state=obligor_seed
-                )
+            if not obligor.has_stochastic_lgd:
+                constant_indices.append(i)
+                constant_values.append(obligor.lgd)
             else:
-                # Use constant LGD
-                lgd_matrix[:, i] = obligor.lgd
+                dist = obligor.lgd_distribution
+                dist_type = getattr(dist, 'distribution_type', 'unknown')
+
+                if dist_type == 'constant':
+                    params = dist.get_params()
+                    constant_indices.append(i)
+                    constant_values.append(params['value'])
+                elif dist_type == 'beta':
+                    params = dist.get_params()
+                    beta_indices.append(i)
+                    beta_params.append((
+                        params['alpha'],
+                        params['beta'],
+                        params['floor'],
+                        params['cap'],
+                        params['factor_sensitivity'],
+                        params['std']
+                    ))
+                else:
+                    # Empirical or unknown - process individually
+                    empirical_obligors.append((i, obligor))
+
+        # Process constant LGD obligors (vectorized)
+        if constant_indices:
+            constant_indices = np.array(constant_indices)
+            constant_values = np.array(constant_values)
+            lgd_matrix[:, constant_indices] = constant_values
+
+        # Process Beta LGD obligors (vectorized)
+        if beta_indices:
+            lgd_matrix = self._sample_beta_lgd_vectorized(
+                lgd_matrix, beta_indices, beta_params,
+                num_scenarios, systematic_factor, rng
+            )
+
+        # Process Empirical LGD obligors (individual - each has unique CDF)
+        for idx, obligor in empirical_obligors:
+            obligor_seed = rng.integers(0, 2**31)
+            lgd_matrix[:, idx] = obligor.sample_lgd(
+                num_scenarios,
+                systematic_factor=systematic_factor,
+                random_state=obligor_seed
+            )
+
+        return lgd_matrix
+
+    def _sample_beta_lgd_vectorized(self, lgd_matrix: np.ndarray,
+                                     beta_indices: List[int],
+                                     beta_params: List[Tuple],
+                                     num_scenarios: int,
+                                     systematic_factor: Optional[np.ndarray],
+                                     rng: np.random.Generator) -> np.ndarray:
+        """Vectorized sampling for all Beta LGD distributions.
+
+        Args:
+            lgd_matrix: Output matrix to fill
+            beta_indices: Indices of obligors with Beta LGD
+            beta_params: List of (alpha, beta, floor, cap, factor_sensitivity, std)
+            num_scenarios: Number of scenarios
+            systematic_factor: Systematic factor values
+            rng: Random number generator
+
+        Returns:
+            Updated lgd_matrix
+        """
+        n_beta = len(beta_indices)
+        beta_indices = np.array(beta_indices)
+
+        # Extract parameters as arrays
+        alphas = np.array([p[0] for p in beta_params])
+        betas = np.array([p[1] for p in beta_params])
+        floors = np.array([p[2] for p in beta_params])
+        caps = np.array([p[3] for p in beta_params])
+        factor_sensitivities = np.array([p[4] for p in beta_params])
+        stds = np.array([p[5] for p in beta_params])
+
+        # Handle degenerate cases (None alpha/beta means constant)
+        valid_mask = (alphas != None) & (betas != None)
+        valid_mask = np.array([a is not None and b is not None
+                               for a, b in zip(alphas, betas)])
+
+        if not np.any(valid_mask):
+            # All are degenerate (constant) - use midpoint of floor/cap
+            lgd_matrix[:, beta_indices] = (floors + caps) / 2
+            return lgd_matrix
+
+        # Sample all valid Beta distributions at once
+        # Shape: (num_scenarios, n_beta)
+        valid_indices = np.where(valid_mask)[0]
+        valid_alphas = alphas[valid_mask].astype(float)
+        valid_betas = betas[valid_mask].astype(float)
+        valid_floors = floors[valid_mask]
+        valid_caps = caps[valid_mask]
+        valid_sensitivities = factor_sensitivities[valid_mask]
+        valid_stds = stds[valid_mask]
+        valid_obligor_indices = beta_indices[valid_mask]
+
+        # Vectorized beta sampling: shape (num_scenarios, n_valid_beta)
+        base_samples = rng.beta(valid_alphas, valid_betas,
+                                size=(num_scenarios, len(valid_alphas)))
+
+        # Scale to [floor, cap]
+        lgd_values = valid_floors + base_samples * (valid_caps - valid_floors)
+
+        # Apply systematic factor adjustment if provided
+        if systematic_factor is not None:
+            # systematic_factor: (num_scenarios,)
+            # valid_sensitivities, valid_stds: (n_valid_beta,)
+            # Broadcast to get adjustment: (num_scenarios, n_valid_beta)
+            adjustment = (systematic_factor[:, np.newaxis] *
+                         valid_sensitivities * valid_stds)
+            lgd_values = lgd_values + adjustment
+
+        # Clip to valid range
+        lgd_values = np.clip(lgd_values, valid_floors, valid_caps)
+
+        # Assign to matrix
+        lgd_matrix[:, valid_obligor_indices] = lgd_values
+
+        # Handle degenerate (constant) cases
+        if not np.all(valid_mask):
+            invalid_indices = np.where(~valid_mask)[0]
+            invalid_obligor_indices = beta_indices[~valid_mask]
+            invalid_floors = floors[~valid_mask]
+            invalid_caps = caps[~valid_mask]
+            lgd_matrix[:, invalid_obligor_indices] = (invalid_floors + invalid_caps) / 2
 
         return lgd_matrix
 
