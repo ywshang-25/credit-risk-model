@@ -1,3 +1,3 @@
-* This respository is created by Yanwen Shang's insructions to Claude Code, which generated the implementation details.
-* The public respository illustrates the key components and concepts that use publically available knowledge.
-* More advanced features and functionalities are only availble in private respositories.
+* This respository is created by Yanwen Shang's insructions with the implmeentation work done by Claude Code.
+* The public respository illustrates the key components and concepts that use publically domain knowledge only.
+* Advanced features may be available in private respositories.
